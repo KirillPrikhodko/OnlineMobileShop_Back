@@ -311,6 +311,40 @@ def login():
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
+@app.route('/products/<int:product_id>', methods=['GET'])
+def get_single_product(product_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            SELECT p.*, c.CategoryName 
+            FROM Products p
+            JOIN Categories c ON p.CategoryID = c.CategoryID
+            WHERE p.ProductID = %s
+        """, (product_id,))
+
+        product = cursor.fetchone()
+        if not product:
+            return jsonify({'error': 'Product not found'}), 404
+
+        return jsonify({
+            'id': product[0],
+            'name': product[1],
+            'brand': product[2],
+            'model': product[3],
+            'category': product[10],  # CategoryName
+            'price': float(product[5]),
+            'description': product[6],
+            'image': product[7],
+            'stock': product[8]
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 if __name__ == '__main__':
     if not os.path.exists(app.config['UPLOAD_FOLDER']):
