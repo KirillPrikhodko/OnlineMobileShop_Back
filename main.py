@@ -166,7 +166,6 @@ def get_product_reviews(product_id):
 
 
 @app.route('/orders', methods=['POST'])
-@token_required
 def create_order(current_user):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -178,42 +177,71 @@ def create_order(current_user):
         if not all(key in data for key in ['items', 'shipping_address', 'payment_method']):
             return jsonify({'error': 'Missing required fields'}), 400
 
-        # Calculate total amount
+        if not isinstance(data['items'], list) or len(data['items']) == 0:
+            return jsonify({'error': 'Order items cannot be empty'}), 400
+
+        # Calculate total amount and validate products
         total = 0.0
         order_items = []
 
         for item in data['items']:
-            cursor.execute("SELECT Price FROM Products WHERE ProductID = %s", (item['product_id'],))
+            if not all(k in item for k in ['product_id', 'quantity']):
+                return jsonify({'error': 'Missing product_id or quantity in items'}), 400
+
+            cursor.execute("""
+                SELECT Price, StockQuantity 
+                FROM Products 
+                WHERE ProductID = %s
+            """, (item['product_id'],))
             product = cursor.fetchone()
 
             if not product:
                 return jsonify({'error': f"Product {item['product_id']} not found"}), 404
 
             price = float(product[0])
-            total += price * item['quantity']
-            order_items.append((item['product_id'], item['quantity'], price))
+            stock = product[1]
+            quantity = item['quantity']
+
+            if quantity <= 0:
+                return jsonify({'error': f"Invalid quantity for product {item['product_id']}"}), 400
+
+            if quantity > stock:
+                return jsonify({'error': f"Not enough stock for product {item['product_id']}"}), 400
+
+            total += price * quantity
+            order_items.append((item['product_id'], quantity, price))
 
         # Create order
         cursor.execute("""
             INSERT INTO Orders (UserID, TotalAmount, ShippingAddress, PaymentMethod)
             VALUES (%s, %s, %s, %s)
-            RETURNING OrderID
+            RETURNING OrderID, OrderDate
         """, (current_user, total, data['shipping_address'], data['payment_method']))
 
-        order_id = cursor.fetchone()[0]
+        order_id, order_date = cursor.fetchone()
 
-        # Add order items
+        # Add order items and update stock
         for item in order_items:
+            product_id, quantity, price = item
+
             cursor.execute("""
                 INSERT INTO OrderItems (OrderID, ProductID, Quantity, UnitPrice)
                 VALUES (%s, %s, %s, %s)
-            """, (order_id, item[0], item[1], item[2]))
+            """, (order_id, product_id, quantity, price))
+
+            cursor.execute("""
+                UPDATE Products 
+                SET StockQuantity = StockQuantity - %s
+                WHERE ProductID = %s
+            """, (quantity, product_id))
 
         conn.commit()
 
         return jsonify({
             'message': 'Order created successfully',
-            'order_id': order_id
+            'order_id': order_id,
+            'order_date': order_date.isoformat(),
+            'total_amount': total
         }), 201
 
     except Exception as e:
